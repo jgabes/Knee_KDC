@@ -25,22 +25,26 @@ class knee_object(object):
         self._desired_velocity2 = 0.
         self._desired_force = 0.
         self._desired_force2 = 0.
-        self._kp = 0.015
-        self._kd = 0.01
+        self._kp = 0.043 #0.07
+        self._kd = 0.04 #0.04
         self._df = 0.
         self._df2 = 0.
-        self._follow_distance = .001
+        self._follow_distance = .005
 
-        self._kp_avoid = 9;
-        self._kd_avoid = .6;
+
+        self._kp_avoid =45;
+        self._kd_avoid = 0#.6;
 
         self._rand_noise = 0
-        self._mass = 10
+        self._mass = 15
 
         self._t = 0
         self._disturb = 0
 
-        self._k_torque = 250
+        self._k_torque =150
+
+
+        self._kd_torque=100
 
         self._equilib = 0
 
@@ -67,17 +71,53 @@ class knee_object(object):
         # self._desired_velocity2=0
 
     def pdcontrol_extend_active(self, state):
+        self._kp=0.04
+        self._kd=0.02
         self._desired_velocity = self._kp * (self._desired_force - self._force) - self._kd * self._df
-        self._desired_velocity2 = (
-        self._kp_avoid * ((state[2] + self._follow_distance) - state[4]) + self._kd_avoid * state[5])
+        self._desired_velocity2 = (self._kp_avoid * ((state[2] + self._follow_distance) - state[4]) + 0*self._kd_avoid * state[5])
 
     def pdcontrol_flex_active(self, state):
-        self._desired_velocity = (
-        self._kp_avoid * ((state[2] - self._follow_distance) - state[0]) + self._kd_avoid * state[2])
-        self._desired_velocity2 = self._kp * (self._desired_force2 - self._force2) - self._kd * self._df2
+        self._kp=0.07
+        self._kd=0.04
+        self._desired_velocity = ( self._kp_avoid * ((state[2] - self._follow_distance) - state[0]) + self._kd_avoid * state[2])
+        self._desired_velocity2 = self._kp * (self._desired_force2 - self._force2) + self._kd * self._df2
+
+    def pdcontrol_extend_bio(self, state):
+        self._kp=0.002
+        self._kd=0.02
+        self._desired_velocity = self._kp *5* (self._desired_force - self._force) - self._kd * self._df
+        self._desired_velocity2 = self._kp * (-1 - self._force) - 0*self._kd * self._df2
+
+    def pdcontrol_flex_bio(self, state):
+        self._kp=0.001
+        self._kd=0.04
+        self._desired_velocity = self._kp * (1 - self._force2) - 0*self._kd * self._df
+        self._desired_velocity2 = self._kp*5 * (self._desired_force - self._force) - self._kd * self._df
 
     def pd_handoff_control(self, state):
-        final_force = self._k_torque * (self._equilib - state[2])
+        final_force = self._k_torque * (self._equilib - state[2])-self._kd_torque*(state[3])
+        self._follow_distance=.02*np.tanh(abs(final_force)/5)-np.sign(final_force)*.001
+        if final_force>=0:
+            self.desired_force=final_force
+            self.desired_force2=0
+            self.pdcontrol_extend_active(state)
+
+        else:
+            self.desired_force=0
+            self.desired_force2=final_force
+            self.pdcontrol_flex_active(state)
+
+    def pd_bio_control(self, state):
+        final_force = self._k_torque * (self._equilib - state[2])-self._kd_torque*(state[3])
+        if final_force>=0:
+            self.desired_force=final_force
+            self.pdcontrol_extend_bio(state)
+        else:
+            self.desired_force2=final_force
+
+
+
+
 
     def observe_f(self):
         self._df = (self._force - self._f_hist[0]) / 3
@@ -167,7 +207,7 @@ class knee_object(object):
     def desired_force2(self):
         return self._desired_force2
 
-    @desired_force.setter
+    @desired_force2.setter
     def desired_force2(self, force2_in):
         self._desired_force2 = force2_in
 
@@ -219,12 +259,12 @@ def ode(state, t, knee_class):
     # useful_class.pdcontrol()
     # des_vel=useful_class.desired_velocity
     # des_vel2=useful_class.desired_velocity
-    input_disturbance = 25 * np.sin(2 * np.pi * knee.t)
+    #input_disturbance = 5 * np.sin(2 * np.pi * knee.t)
+    input_disturbance=-5
     knee.disturb = input_disturbance
     dstate_dt[0] = state[1]  # dx/dt = xdot
     dstate_dt[1] = 0  # #input
     dstate_dt[2] = state[3]  # dx/dt of weight
-    # dstate_dt[3] = (f1-f2+useful_class.check_rand())/m
     dstate_dt[3] = (f1 + f2 + input_disturbance) / m  # accel of weight
     dstate_dt[4] = state[5]  # vel oc phi2
     dstate_dt[5] = 0  # des_vel2
@@ -250,7 +290,7 @@ if __name__ == "__main__":
     des_f_history = [0.]
     des_f2_history = [0.]
 
-    while t < 10:
+    while t < 2:
         for _ in range(10):
             times = np.array([t, t + dt])
             states = spi.odeint(ode, state, times, (knee,))
@@ -260,19 +300,26 @@ if __name__ == "__main__":
         state_history.append([state[0], state[1], state[2], state[3], state[4], state[5]])
         time_history.append(t)
         knee.force = (state[0] - state[2]) * knee.stiff + (state[1] - state[3]) * knee.damp
-        knee.force2 = -((state[2] - state[4]) * knee.stiff + (state[3] - state[5])) * knee.damp
+        knee.force2 = -(state[2] - state[4]) * knee.stiff + (state[3] - state[5]) * knee.damp
         knee.observe_f()
 
-        goal_pos = -.05
-        if state[2] < goal_pos:
-            des_force = 250 * (goal_pos - state[2])
-            des_force2 = 0.
-        else:
-            des_force = 0.
-            des_force2 = 250 * (goal_pos - state[2])
+        #goal_pos = -.05
+        #if state[2] < goal_pos:
+        #    des_force = 250 * (goal_pos - state[2])
+        #    des_force2 = 0.
+        #else:
+        #    des_force = 0.
+        #    des_force2 = 250 * (goal_pos - state[2])
 
-        knee.desired_force = des_force
-        knee.desired_force2 = des_force2
+        #knee.desired_force = des_force
+        #knee.desired_force2 = des_force2
+
+
+        # knee.pdcontrol()
+        #knee.pdcontrol_extend_active(state)
+        #knee.pdcontrol_flex_active(state)
+        #knee.pd_handoff_control(state)
+        knee.pd_bio_control(state)
 
         if state[0] < state[2]:
             force_history.append(0.)
@@ -284,20 +331,20 @@ if __name__ == "__main__":
         else:
             force2_history.append(knee.force2)
 
-        des_f_history.append(des_force)
-        des_f2_history.append(des_force2)
+        des_f_history.append(knee.desired_force)
+        des_f2_history.append(knee.desired_force2)
         # print "state at t = {:.2f}:  x = {:.3f}, {:.3f}, {:.3f}, f={:.3f}, {:.3f}".format(t, state[0], state[2], state[4],my_thing.force, my_thing.force2)
 
-        # knee.pdcontrol()
-
-        knee.pdcontrol_extend_active(state)
-
-        knee.pdcontrol_flex_active(state)
 
         state[1] = knee._desired_velocity
         state[5] = knee._desired_velocity2
 
-        if t > 3:
+
+
+
+
+
+        if t > 5:
             z = 1
     # End SImulation while loop
 
@@ -327,8 +374,7 @@ if __name__ == "__main__":
     plt.subplot(3, 1, 3)
     f1_line, = plt.plot(time_history, force_history, 'r-', linewidth=4.0, label="Force")
     f2_line, = plt.plot(time_history, force2_history, 'b-', linewidth=4.0, label="Force")
-    f_input, = plt.plot(time_history, 25 * np.sin(2 * np.pi * np.array(time_history)), 'g--', linewidth=4.0,
-                        label="desired")
+    #f_input, = plt.plot(time_history, 25 * np.sin(2 * np.pi * np.array(time_history)), 'g--', linewidth=4.0,label="desired")
 
     f_des_line = plt.plot(time_history, des_f_history, 'r--', linewidth=4.0, label="Des Force1")
     f2_des_line = plt.plot(time_history, des_f2_history, 'b--', linewidth=4.0, label="Des Force2")
